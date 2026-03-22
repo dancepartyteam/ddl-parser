@@ -1,0 +1,49 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:hex="clr-namespace:AvaloniaHex;assembly=AvaloniaHex"
+        x:Class="DDLParserWV.MainWindow"
+        Title="Quazal DDL Parser"
+        x:CompileBindings="True"
+        Width="815" Height="720"
+        MinWidth="400" MinHeight="300">
+
+  <DockPanel>
+
+    <!-- Menu bar -->
+    <Menu DockPanel.Dock="Top">
+      <MenuItem Header="Scan binary" Click="ScanBinary_Click" />
+    </Menu>
+
+    <!-- Radio buttons -->
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,2">
+      <RadioButton x:Name="radioJson"     Content="JSON"     IsChecked="True" GroupName="view" Margin="0,0,6,0" Checked="Radio_Changed" />
+      <RadioButton x:Name="radioMarkdown" Content="Markdown"                  GroupName="view" Margin="0,0,6,0" Checked="Radio_Changed" />
+      <RadioButton x:Name="radioDebug"    Content="Debug"                     GroupName="view"                  Checked="Radio_Changed" />
+    </StackPanel>
+
+    <!-- Tab control -->
+    <TabControl x:Name="tabControl">
+
+      <TabItem Header="Hex View">
+        <hex:HexEditor x:Name="hexEditor"
+                      FontFamily="Courier New"
+                      FontSize="13"
+                      VerticalAlignment="Stretch"
+                      HorizontalAlignment="Stretch"
+                      />
+    </TabItem>
+
+      <TabItem Header="Parsed Output" IsSelected="True">
+        <TextBox x:Name="outputBox"
+                 FontFamily="Courier New"
+                 FontSize="12"
+                 AcceptsReturn="True"
+                 IsReadOnly="True"
+                 TextWrapping="NoWrap"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+      </TabItem>
+
+    </TabControl>
+  </DockPanel>
+</Window>

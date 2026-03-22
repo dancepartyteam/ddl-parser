@@ -1,0 +1,1513 @@
+------------------------------------------------
+FILE: ./Enums/EParseTreeElement.cs
+------------------------------------------------
+﻿namespace DDLParserWV
+{
+    public enum EParseTreeElement
+    {
+        ParseTreeItem,
+        NameSpaceItem,
+        Declaration,
+        DOClassDeclaration,
+        DatasetDeclaration,
+        TypeDeclaration,
+        Variable,
+        MethodDeclaration,
+        RMC,
+        Action,
+        AdapterDeclaration,
+        PropertyDeclaration,
+        ProtocolDeclaration,
+        Parameter,
+        ReturnValue,
+        ClassDeclaration,
+        TemplateDeclaration,
+        SimpleTypeDeclaration,
+        TemplateInstance,
+        DDLUnitDeclaration,
+        DupSpaceDeclaration,
+        NameSpaceDeclaration = 23,
+        Constant = 24,
+        EnumDeclaration = 25,
+        Enumerator = 26
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./ParseTree.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class ParseTree
+    {
+        /// <summary>
+        /// Unknown byte, usually 0.
+        /// </summary>
+        [JsonProperty("unusedByte")]
+        public byte UnusedByte { get; set; }
+        /// <summary>
+        /// Semver with build id added at the end.
+        /// </summary>
+        [JsonProperty("version")]
+        public string Version { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace GlobalNamespace {  get; set; }
+        [JsonProperty("unknown_v2")]
+        public uint V2_Unknown { get; set; }
+        public uint MajorVersion { get; set; }
+        public uint MinorVersion { get; set; }
+        public uint PatchVersion { get; set; }
+
+        public ParseTree(Stream s, StringBuilder log)
+        {
+            log.AppendLine("[ParseTree]");
+            UnusedByte = (byte)s.ReadByte();
+            log.AppendLine($"\t[unusedByte: {UnusedByte}]");
+            MajorVersion = Utils.ReadU32(s);
+            MinorVersion = Utils.ReadU32(s);
+            PatchVersion = Utils.ReadU32(s);
+            uint build = Utils.ReadU32(s);
+            Version = $"{MajorVersion}.{MinorVersion}.{PatchVersion}.{build}";
+            log.AppendLine($"\t[version: {Version}]");
+            // only present in v2 < 2.5.7
+            if (MajorVersion == 2 && (MinorVersion < 5 || (MinorVersion == 5 && PatchVersion < 7)))
+                V2_Unknown = Utils.ReadU32(s);
+            GlobalNamespace = new NameSpace(s, log, 1, MajorVersion);
+            while ((s.Position % 4) != 0 && s.Position < s.Length)
+                s.ReadByte();
+        }
+
+        public bool ShouldSerializeV2_Unknown()
+        {
+            return MajorVersion == 2 && (MinorVersion < 5 || (MinorVersion == 5 && PatchVersion < 7));
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/TemplateType.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class TemplateType
+    {
+        [JsonProperty("genericType")]
+        public string GenericType {  get; set; }
+        [JsonProperty("typeParams")]
+        public List<string> TypeParams {  get; set; } = new List<string>();
+
+        public TemplateType Parse(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[TemplateType]");
+            GenericType = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[genericType: {GenericType}]");
+            uint count = Utils.ReadU32(s);
+            for (uint i = 0; i < count; i++)
+                TypeParams.Add(Utils.ReadString(s));
+            log.AppendLine($"{tabs}\t[TypeParams]");
+            foreach (string param in TypeParams)
+                log.AppendLine($"{tabs}\t\t[TypeParam: {param}]");
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/MethodDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class MethodDeclaration : ParseTreeItem<MethodDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.MethodDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("variantCount1")]
+        public uint V2_RequestVariantCount1 { get; set; }
+        [JsonProperty("variants1")]
+        public List<MethodVariant> V2_Variants1 { get; set; }
+        [JsonProperty("variantCount2")]
+        public uint V2_RequestVariantCount2 { get; set; }
+        [JsonProperty("variants2")]
+        public List<MethodVariant> V2_Variants2 { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; } = new NameSpace();
+        private uint Version { get; set; }
+
+        protected override MethodDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[MethodDeclaration]");
+            Declaration.Parse(s, log, depth + 1, Version);
+            // only present in v1
+            if (Version == 1)
+                NameSpace = new NameSpace(s, log, depth + 1, Version);
+            // only present in v2
+            else if (Version == 2)
+            {
+                V2_Variants1 = new List<MethodVariant>();
+                V2_Variants2 = new List<MethodVariant>();
+                // interpret as 2 lists
+                V2_RequestVariantCount1 = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_RequestVariantCount1: {V2_RequestVariantCount1}]");
+                for (uint i = 0; i < V2_RequestVariantCount1; i++)
+                    V2_Variants1.Add(new MethodVariant(s, log, depth + 1, Version));
+
+                V2_RequestVariantCount2 = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_RequestVariantCount2: {V2_RequestVariantCount2}]");
+                for (uint i = 0; i < V2_RequestVariantCount2; i++)
+                    V2_Variants2.Add(new MethodVariant(s, log, depth + 1, Version));
+            }
+            return this;
+        }
+
+        public bool ShouldSerializeV2_RequestVariantCount1()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeV2_RequestVariantCount2()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeV2_Variants1()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeV2_Variants2()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeNameSpace()
+        {
+            return Version == 1;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/RMC.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class RMC : ParseTreeItem<RMC>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.RMC;
+        [JsonProperty("methodDecl")]
+        public MethodDeclaration MethodDeclaration { get; set; } = new MethodDeclaration();
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override RMC ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[RMC]");
+            MethodDeclaration.Parse(s, log, depth + 1, majorVersion);
+            if (majorVersion < 2)
+                NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+
+        public string GetName()
+        {
+            return MethodDeclaration.Declaration.NsItem.NsItemName;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/DatasetDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class DatasetDeclaration : ParseTreeItem<DatasetDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.DatasetDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override DatasetDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[DatasetDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/Declaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class Declaration : ParseTreeItem<Declaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.Declaration;
+        [JsonProperty("nsItem")]
+        public NameSpaceItem NsItem { get; set; } = new NameSpaceItem();
+        [JsonProperty("nsName")]
+        public string NamespaceName { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override Declaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[Declaration]");
+            NsItem.Parse(s, log, depth + 1, majorVersion);
+            NamespaceName = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[nsName: {NamespaceName}]");
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/Action.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class Action : ParseTreeItem<Action>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.Action;
+        [JsonProperty("methodDecl")]
+        public MethodDeclaration MethodDeclaration { get; set; } = new MethodDeclaration();
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override Action ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[Action]");
+            MethodDeclaration.Parse(s, log, depth + 1, majorVersion);
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/DDLUnitDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class DDLUnitDeclaration : ParseTreeItem<DDLUnitDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.DDLUnitDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("unitName")]
+        public string UnitName { get; set; }
+        [JsonProperty("unitDir")]
+        public string UnitDir { get; set; }
+        [JsonProperty("unknown_v2")]
+        public byte V2_Unk {  get; set; }
+        private uint Version { get; set; }
+
+        protected override DDLUnitDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[DDLUnitDeclaration]");
+            Declaration.Parse(s, log, depth + 1, Version);
+            UnitName = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[unitName: {UnitName}]");
+            UnitDir = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[unitDir: {UnitDir}]");
+            // only present in v2
+            if (Version == 2)
+            {
+                V2_Unk = (byte)s.ReadByte();
+                log.AppendLine($"{tabs}\t[V2_Unk: {V2_Unk}]");
+            }
+            return this;
+        }
+
+        public bool ShouldSerializeV2_Unk()
+        {
+            return Version == 2;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/AdapterDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class AdapterDeclaration : ParseTreeItem<AdapterDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.AdapterDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+
+        protected override AdapterDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[AdapterDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/DupSpaceDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class DupSpaceDeclaration : ParseTreeItem<DupSpaceDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.DupSpaceDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+
+        protected override DupSpaceDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[DupSpaceDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/ClassDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class ClassDeclaration : ParseTreeItem<ClassDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.ClassDeclaration;
+        [JsonProperty("typeDecl")]
+        public Declaration TypeDeclaration { get; set; } = new Declaration();
+        [JsonProperty("unknown1_v2")]
+        public byte V2_Unk1 { get; set; }
+        [JsonProperty("parentNamespace")]
+        public string ParentNamespaceName { get; set; }
+        [JsonProperty("unknown2_v2")]
+        public uint V2_Unk2 { get; set; }
+        [JsonProperty("unknown3_v2")]
+        public uint V2_Unk3 { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+        private uint Version { get; set; }
+
+        protected override ClassDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[ClassDeclaration]");
+            TypeDeclaration.Parse(s, log, depth + 1, Version);
+            // present only in v2
+            if (Version == 2)
+            {
+                V2_Unk1 = (byte)s.ReadByte();
+                log.AppendLine($"{tabs}\t[V2_Unk1: {V2_Unk1}]");
+            }
+            ParentNamespaceName = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[parentNamespace: {ParentNamespaceName}]");
+            // present only in v2
+            if (Version == 2)
+            {
+                V2_Unk2 = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk2: {V2_Unk2}]");
+                V2_Unk3 = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk3: {V2_Unk3}]");
+            }
+            NameSpace = new NameSpace(s, log, depth + 1, Version);
+            return this;
+        }
+
+        public string GetName()
+        {
+            return TypeDeclaration.NsItem.NsItemName;
+        }
+
+        public bool ShouldSerializeV2_Unk1()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeV2_Unk2()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeV2_Unk3()
+        {
+            return Version == 2;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/ReturnValue.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class ReturnValue : ParseTreeItem<ReturnValue>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.ReturnValue;
+        [JsonProperty("var")]
+        public Variable Variable { get; set; } = new Variable();
+        [JsonProperty("declUse")]
+        public DeclarationUse DeclarationUse { get; set; }
+        [JsonProperty("arraySize")]
+        public uint ArraySize { get; set; }
+        [JsonProperty("unknown_v2")]
+        public uint V2_Unk {  get; set; }
+        private uint Version { get; set; }
+
+        protected override ReturnValue ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[ReturnValue]");
+            Variable.Parse(s, log, depth + 1, Version);
+            byte type = (byte)s.ReadByte();
+            DeclarationUse = new DeclarationUse(s, (EParseTreeElement)type, log, depth + 1, Version);
+            ArraySize = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[arraySize: {ArraySize}]");
+            if (Version == 2)
+            {
+                V2_Unk = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk: {V2_Unk}]");
+            }
+            return this;
+        }
+
+        public string GetFullType()
+        {
+            return DeclarationUse.TypeName;
+        }
+
+        public string GetName()
+        {
+            return Variable.NsItem.NsItemName;
+        }
+
+        public bool ShouldSerializeV2_Unk()
+        {
+            return Version == 2;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/V2/Constant.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class Constant : ParseTreeItem<Constant>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.Constant;
+        [JsonProperty("variable")]
+        public Variable Variable { get; set; } = new Variable();
+        [JsonProperty("declUse")]
+        public DeclarationUse DeclarationUse { get; set; }
+        [JsonProperty("arraySize")]
+        public uint ArraySize { get; set; }
+        [JsonProperty("defaultValue")]
+        public string DefaultValue { get; set; }
+
+        protected override Constant ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[Constant]");
+            Variable.Parse(s, log, depth + 1, majorVersion);
+            byte type = (byte)s.ReadByte();
+            DeclarationUse = new DeclarationUse(s, (EParseTreeElement)type, log, depth + 1, majorVersion);
+            ArraySize = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[ArraySize: {ArraySize}]");
+            DefaultValue = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[DefaultValue: {DefaultValue}]");
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/V2/EnumDeclarationVersion.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class EnumDeclarationVersion
+    {
+        [JsonProperty("version")]
+        public uint Version { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        public EnumDeclarationVersion(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[EnumDeclarationVersion]");
+            Version = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[Version: {Version}]");
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/V2/MethodVariant.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    /// <summary>
+    /// Only present in v2.
+    /// </summary>
+    [JsonObject(MemberSerialization.OptIn)]
+    public class MethodVariant
+    {
+        [JsonProperty("id")]
+        public uint Id { get; set; }
+        [JsonProperty("name")]
+        public string Name { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+        private uint Version { get; set; }
+
+        public MethodVariant(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            if (Version == 1)
+                throw new NotImplementedException("MethodVariant is only used in v2");
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[MethodVariant]");
+            Id = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[Id: {Id}]");
+            Name = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[Name: {Name}]");
+            NameSpace = new NameSpace(s, log, depth + 1, Version);
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/V2/Enumerator.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class Enumerator : ParseTreeItem<Enumerator>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.Enumerator;
+        [JsonProperty("nsItem")]
+        public NameSpaceItem NsItem { get; set; } = new NameSpaceItem();
+        [JsonProperty("value")]
+        public string Value { get; set; }
+
+        protected override Enumerator ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[Enumerator]");
+            NsItem.Parse(s, log, depth + 1, majorVersion);
+            Value = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[Value: {Value}]");
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/V2/NameSpaceDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class NameSpaceDeclaration : ParseTreeItem<NameSpaceDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.NameSpaceDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override NameSpaceDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[NameSpaceDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/V2/EnumDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class EnumDeclaration : ParseTreeItem<EnumDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.EnumDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("versions")]
+        public uint VersionsSize { get; set; }
+        public List<EnumDeclarationVersion> Versions { get; set; } = new List<EnumDeclarationVersion>();
+
+        protected override EnumDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[EnumDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            VersionsSize = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[Versions.Size: {VersionsSize}]");
+            for (uint i = 0; i < VersionsSize; i++)
+                Versions.Add(new EnumDeclarationVersion(s, log, depth + 1, majorVersion));
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/TemplateDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class TemplateDeclaration : ParseTreeItem<TemplateDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.TemplateDeclaration;
+        [JsonProperty("typeDecl")]
+        public Declaration TypeDeclaration { get; set; } = new Declaration();
+        [JsonProperty("unknown")]
+        public uint Unknown {  get; set; }
+
+        protected override TemplateDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[TemplateDeclaration]");
+            TypeDeclaration.Parse(s, log, depth + 1, majorVersion);
+            Unknown = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[unknown: {Unknown}]");
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/NameSpace.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class NameSpace
+    {
+        [JsonProperty("count")]     
+        public uint Count { get; set; }
+        [JsonProperty("items")]
+        public List<ParseTreeItemBase> Items { get; set; } = new List<ParseTreeItemBase>();
+
+        public NameSpace()
+        {
+            Items = new List<ParseTreeItemBase>();
+        }
+
+        public NameSpace(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            Count = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}[NameSpace count={Count}]");
+            for (int i = 0; i < Count; i++)
+            {
+                byte type = (byte)s.ReadByte();
+                switch ((EParseTreeElement)type)
+                {
+                    case EParseTreeElement.NameSpaceItem:
+                        Items.Add(new NameSpaceItem().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.Declaration:
+                        Items.Add(new Declaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.DOClassDeclaration:
+                        Items.Add(new DOClassDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.DatasetDeclaration:
+                        Items.Add(new DatasetDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.TypeDeclaration:
+                        Items.Add(new TypeDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.Variable:
+                        Items.Add(new Variable().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.MethodDeclaration:
+                        Items.Add(new MethodDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.RMC:
+                        Items.Add(new RMC().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.Action:
+                        Items.Add(new Action().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.AdapterDeclaration:
+                        Items.Add(new AdapterDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.PropertyDeclaration:
+                        Items.Add(new PropertyDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.ProtocolDeclaration:
+                        Items.Add(new ProtocolDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.Parameter:
+                        Items.Add(new Parameter().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.ReturnValue:
+                        Items.Add(new ReturnValue().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.ClassDeclaration:
+                        Items.Add(new ClassDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.TemplateDeclaration:
+                        Items.Add(new TemplateDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.SimpleTypeDeclaration:
+                        Items.Add(new SimpleTypeDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.TemplateInstance:
+                        Items.Add(new TemplateInstance().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.DDLUnitDeclaration:
+                        Items.Add(new DDLUnitDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.DupSpaceDeclaration:
+                        Items.Add(new DupSpaceDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.NameSpaceDeclaration:
+                        Items.Add(new NameSpaceDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.Constant:
+                        Items.Add(new Constant().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.EnumDeclaration:
+                        Items.Add(new EnumDeclaration().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    case EParseTreeElement.Enumerator:
+                        Items.Add(new Enumerator().Parse(s, log, depth + 1, majorVersion));
+                        break;
+                    default:
+                        throw new Exception($"Unknown NameSpaceItem type {type}");
+                }
+            }
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/TypeDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class TypeDeclaration : ParseTreeItem<TypeDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.TypeDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+
+        protected override TypeDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[TypeDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/Parameter.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class Parameter : ParseTreeItem<Parameter>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.Parameter;
+        [JsonProperty("var")]
+        public Variable Variable { get; set; } = new Variable();
+        [JsonProperty("declUse")]
+        public DeclarationUse DeclarationUse {  get; set; }
+        [JsonProperty("arraySize")]
+        public uint ArraySize { get; set; }
+        [JsonProperty("unknown_v2")]
+        public uint V2_Unk { get; set; }
+        [JsonIgnore]
+        public byte Flags { get; set; }
+        [JsonProperty("direction")]
+        public string Direction { get; set; }
+        private uint Version { get; set; }
+
+        protected override Parameter ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[Parameter]");
+            Variable.Parse(s, log, depth + 1, Version);
+            byte type = (byte)s.ReadByte();
+            DeclarationUse = new DeclarationUse(s, (EParseTreeElement)type, log, depth + 1, Version);
+            ArraySize = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[arraySize: {ArraySize}]");
+            // only present in v2
+            if (Version == 2)
+            {
+                V2_Unk = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk: {V2_Unk}]");
+            }
+            Flags = (byte)s.ReadByte();
+            switch (Flags & 3)
+            {
+                case 1:
+                    Direction = "in";
+                    break;
+                case 2:
+                    Direction = "out";
+                    break;
+                case 3:
+                    Direction = "in/out";
+                    break;
+            }
+            log.AppendLine($"{tabs}\t[direction: {Direction}]");
+            return this;
+        }
+
+        public bool IsRequest()
+        {
+            return Flags == 1 || Flags == 3;
+        }
+
+        public bool IsResponse()
+        {
+            return Flags == 2 || Flags == 3;
+        }
+
+        public string GetName()
+        {
+            return Variable.NsItem.NsItemName;
+        }
+
+        public string GetFullType()
+        {
+            return DeclarationUse.TypeName;
+        }
+
+        public bool ShouldSerializeV2_Unk()
+        {
+            return Version == 2;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/PropertyDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class PropertyDeclaration : ParseTreeItem<PropertyDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.PropertyDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration {  get; set; } = new Declaration();
+        [JsonProperty("categoryFlags")]
+        public uint CategoryFlags { get; set; }
+        [JsonProperty("targetFlags")]
+        public uint TargetFlags { get; set; }
+
+        protected override PropertyDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[PropertyDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            CategoryFlags = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[categoryFlags: {CategoryFlags}]");
+            TargetFlags = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[targetFlags: {TargetFlags}]");
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/ProtocolDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class ProtocolDeclaration : ParseTreeItem<ProtocolDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.ProtocolDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override ProtocolDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[ProtocolDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/Variable.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class Variable : ParseTreeItem<Variable>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.Variable;
+        [JsonProperty("nsItem")]
+        public NameSpaceItem NsItem { get; set; } = new NameSpaceItem();
+        [JsonProperty("declUse")]
+        public DeclarationUse DeclarationUse { get; set; }
+        [JsonProperty("arraySize")]
+        public uint ArraySize { get; set; }
+        [JsonProperty("unknown_v2")]
+        public uint V2_Unk { get; set; }
+        private uint Version { get; set; }
+
+        protected override Variable ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[Variable]");
+            NsItem.Parse(s, log, depth + 1, Version);
+            byte declUseType = (byte)s.ReadByte();
+            DeclarationUse = new DeclarationUse(s, (EParseTreeElement)declUseType, log, depth + 1, Version);
+            ArraySize = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[arraySize: {ArraySize}]");
+            // only present in v2
+            if (Version == 2)
+            {
+                V2_Unk = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk: {V2_Unk}]");
+            }
+            return this;
+        }
+
+        public string GetName()
+        {
+            return NsItem.NsItemName;
+        }
+
+        public string GetFullType()
+        {
+            return DeclarationUse.TypeName;
+        }
+
+        public bool ShouldSerializeV2_Unk()
+        {
+            return Version == 2;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/DeclarationUse.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class DeclarationUse
+    {
+        [JsonProperty("type")]
+        public string TypeName { get; set; }
+
+        public DeclarationUse(Stream s, EParseTreeElement type, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[DeclarationUse]");
+            if (type == EParseTreeElement.TemplateInstance)
+                TypeName = new TemplateDeclarationUse().Parse(s, log, depth + 1, majorVersion).NsItem.TreeItemName;
+            // SimpleTypeDeclaration
+            else
+                TypeName = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[type: {TypeName}]");
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/TemplateInstance.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class TemplateInstance : ParseTreeItem<TemplateInstance>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.TemplateInstance;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("templateType")]
+        public TemplateType TemplateType { get; set; } = new TemplateType();
+
+        protected override TemplateInstance ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[TemplateInstance]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            TemplateType.Parse(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/TemplateDeclarationUse.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class TemplateDeclarationUse
+    {
+        [JsonProperty("type")]
+        public string TypeName {  get; set; }
+        [JsonProperty("nsItem")]
+        public NameSpaceItem NsItem {  get; set; } = new NameSpaceItem();
+        [JsonProperty("declUses")]
+        public List<DeclarationUse> DeclarationUses { get; set; } = new List<DeclarationUse>();
+
+        public TemplateDeclarationUse Parse(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            // NameSpaceItem data inconsistent in v2 (no added uint fields, same as v1)
+            //NsItem.Parse(s, log, depth + 1, majorVersion);
+            NsItem.TreeItemName = Utils.ReadString(s);
+            NsItem.NsItemName = Utils.ReadString(s);
+            TypeName = NsItem.TreeItemName;
+            byte count = (byte)s.ReadByte();
+            byte type;
+            for (byte i = 0; i < count; i++)
+            {
+                type = (byte)s.ReadByte();
+                DeclarationUses.Add(new DeclarationUse(s, (EParseTreeElement)type, log, depth + 1, majorVersion));
+            }
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/NameSpaceItem.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class NameSpaceItem : ParseTreeItem<NameSpaceItem>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.NameSpaceItem;
+        [JsonProperty("treeItemName")]
+        public string TreeItemName { get; set; }
+        [JsonProperty("unknown1_v2")]
+        public uint V2_Unk1 { get; set; }
+        [JsonProperty("nsItemName")]
+        public string NsItemName { get; set; }
+        [JsonProperty("unknown2_v2")]
+        public uint V2_Unk2 { get; set; }
+        private uint Version { get; set; }
+
+        protected override NameSpaceItem ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            Version = majorVersion;
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[NameSpaceItem]");
+            TreeItemName = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[TreeItemName: {TreeItemName}]");
+            // only present in v2
+            if (Version == 2)
+            {
+                V2_Unk1 = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk1: {V2_Unk1}]");
+            }
+            NsItemName = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[NsItemName: {NsItemName}]");
+            // only present in v2
+            if (Version == 2)
+            {
+                V2_Unk2 = Utils.ReadU32(s);
+                log.AppendLine($"{tabs}\t[V2_Unk2: {V2_Unk2}]");
+            }
+            return this;
+        }
+
+        public bool ShouldSerializeV2_Unk1()
+        {
+            return Version == 2;
+        }
+
+        public bool ShouldSerializeV2_Unk2()
+        {
+            return Version == 2;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/SimpleTypeDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class SimpleTypeDeclaration : ParseTreeItem<SimpleTypeDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.SimpleTypeDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("type")]
+        public string TypeName { get; set; }
+
+        protected override SimpleTypeDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[SimpleTypeDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            TypeName = Declaration.NsItem.TreeItemName;
+            log.AppendLine($"{tabs}\t[type: {TypeName}]");
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Elements/DOClassDeclaration.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class DOClassDeclaration : ParseTreeItem<DOClassDeclaration>
+    {
+        public override EParseTreeElement Type { get; set; } = EParseTreeElement.DOClassDeclaration;
+        [JsonProperty("decl")]
+        public Declaration Declaration { get; set; } = new Declaration();
+        [JsonProperty("parentDeclNamespace")]
+        public string ParentDeclNamespace { get; set; }
+        [JsonProperty("id")]
+        public uint Id { get; set; }
+        [JsonProperty("namespace")]
+        public NameSpace NameSpace { get; set; }
+
+        protected override DOClassDeclaration ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            string tabs = Utils.MakeTabs(depth);
+            log.AppendLine($"{tabs}[DOClassDeclaration]");
+            Declaration.Parse(s, log, depth + 1, majorVersion);
+            ParentDeclNamespace = Utils.ReadString(s);
+            log.AppendLine($"{tabs}\t[parentDeclNamespace: {ParentDeclNamespace}]");
+            Id = Utils.ReadU32(s);
+            log.AppendLine($"{tabs}\t[id: {Id}]");
+            NameSpace = new NameSpace(s, log, depth + 1, majorVersion);
+            return this;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./BPTFile.cs
+------------------------------------------------
+﻿using System;
+using System.Collections.Generic;
+using Newtonsoft.Json;
+
+namespace DDLParserWV
+{
+    /// <summary>
+    /// The root object of output JSON.
+    /// </summary>
+    [JsonObject(MemberSerialization.OptIn)]
+    public class BPTFile
+    {
+        [JsonProperty("file")]
+        public string Name { get; set; }
+        [JsonProperty("trees")]
+        public List<ParseTree> ParseTrees { get; set; } = new List<ParseTree>();
+
+        public BPTFile(string name)
+        {
+            Name = name;
+        }
+
+        public string ToJson()
+        {
+            string json;
+            try
+            {
+                json = JsonConvert.SerializeObject(this, Formatting.Indented);
+            }
+            catch (Exception ex)
+            {
+                json = $"[ERROR] {ex}";
+            }
+            return json;
+        }
+
+        public string ToMarkdown()
+        {
+            string md = "";
+            foreach (var tree in ParseTrees)
+            {
+                DDLUnitDeclaration ddlUnit = new DDLUnitDeclaration();
+                List<ProtocolDeclaration> protocols = new List<ProtocolDeclaration>();
+                List<ClassDeclaration> classes = new List<ClassDeclaration>();
+                foreach (var item in tree.GlobalNamespace.Items)
+                {
+                    if (item.Type == EParseTreeElement.DDLUnitDeclaration)
+                        ddlUnit = (DDLUnitDeclaration)item;
+                    else if (item.Type == EParseTreeElement.ProtocolDeclaration)
+                        protocols.Add((ProtocolDeclaration)item);
+                    else if (item.Type == EParseTreeElement.ClassDeclaration)
+                        classes.Add((ClassDeclaration)item);
+                }
+
+                foreach (var protocol in protocols)
+                    md += MarkdownRenderer.RenderProtocol(protocol, tree.MajorVersion);
+
+                if (protocols.Count == 0)
+                    md += $"# {ddlUnit.UnitName}\n";
+
+                md += MarkdownRenderer.RenderClasses(classes);
+            }
+            return md;
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Interfaces/ParseTreeItem.cs
+------------------------------------------------
+﻿using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    public abstract class ParseTreeItem<T> : ParseTreeItemBase where T : ParseTreeItem<T>
+    {
+        protected abstract T ParseTyped(Stream s, StringBuilder log, uint depth, uint majorVersion);
+        public override ParseTreeItemBase Parse(Stream s, StringBuilder log, uint depth, uint majorVersion)
+        {
+            return ParseTyped(s, log, depth, majorVersion);
+        }
+    }
+}
+-e 
+
+------------------------------------------------
+FILE: ./Interfaces/ParseTreeItemBase.cs
+------------------------------------------------
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
+using System.IO;
+using System.Text;
+
+namespace DDLParserWV
+{
+    [JsonObject(MemberSerialization.OptIn)]
+    public abstract class ParseTreeItemBase
+    {
+        [JsonConverter(typeof(StringEnumConverter))]
+        [JsonProperty("elemType")]
+        public abstract EParseTreeElement Type { get; set; }
+        public abstract ParseTreeItemBase Parse(Stream s, StringBuilder log, uint depth, uint majorVersion);
+    }
+}
+-e 
+
