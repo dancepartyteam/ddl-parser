@@ -1,0 +1,68 @@
+name: Build and Multi-Platform Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Define the different OS and Runtimes to build for
+        include:
+          - os: macos-latest
+            rid: osx-arm64
+            name: MacOS_ARM64
+          - os: windows-latest
+            rid: win-x64
+            name: Windows_x64
+          - os: ubuntu-latest
+            rid: linux-x64
+            name: Linux_x64
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish App
+        # Build as a single-file, self-contained executable
+        run: dotnet publish -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o ./publish
+
+      # Platform-Specific Packaging Logic
+      - name: Package MacOS (App Bundle)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p "DDLParser.app/Contents/MacOS"
+          cp Info.plist "DDLParser.app/Contents/Info.plist"
+          cp -r ./publish/* "DDLParser.app/Contents/MacOS/"
+          chmod +x "DDLParser.app/Contents/MacOS/DDLParserWV"
+          zip -r DDLParser_${{ matrix.name }}.zip DDLParser.app
+
+      - name: Package Windows (Zip)
+        if: matrix.os == 'windows-latest'
+        run: Compress-Archive -Path ./publish/* -DestinationPath DDLParser_${{ matrix.name }}.zip
+
+      - name: Package Linux (Zip)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd publish
+          chmod +x DDLParserWV
+          zip -r ../DDLParser_${{ matrix.name }}.zip .
+
+      - name: Upload to Release
+        # Uploads each artifact to the same GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DDLParser_${{ matrix.name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
